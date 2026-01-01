@@ -152,9 +152,11 @@ export const analyzeWithGemini = async (
         }).join("\n")
       : "No links shared.";
 
-  // 5. Killer Context
+  // 5. Killer Context - Now includes WHAT happened before
   const topKiller = conversationKillers && conversationKillers.length > 0 ? conversationKillers[0] : null;
-  const killerContext = topKiller ? `Message by ${topKiller.sender}: "${topKiller.content.substring(0, 100)}..." (Silence: ${topKiller.silenceDurationHours}h)` : "No killer found.";
+  const killerContext = topKiller 
+      ? `Prior Context: ${topKiller.context || "None"}\nKiller Message by ${topKiller.sender}: "${topKiller.content.substring(0, 100)}..."\nResult: ${topKiller.silenceDurationHours}h silence.` 
+      : "No killer found.";
 
   // 6. Peak Days
   let peakContextStr = "No peak day data.";
@@ -206,7 +208,8 @@ export const analyzeWithGemini = async (
   const roastPrompt = `
     You are a casting director.
     ${basePrompt}
-    AWKWARD SILENCE EVENT: ${killerContext}
+    AWKWARD SILENCE EVENT: 
+    ${killerContext}
     
     TASKS:
     1. Awards: 6 creative awards. Title SHORT (MAX 4 WORDS). Reason funny.
@@ -216,7 +219,7 @@ export const analyzeWithGemini = async (
        - "name": Exact member name from the STATS list.
        - "archetype": Short label (e.g. "The Villain", "The Mom").
        - "role": One sentence description of their behavior.
-    4. Killer Roast: Roast the awkward silence message.
+    4. Killer Roast: Roast the "AWKWARD SILENCE EVENT". Explain WHY the message killed the chat based on the "Prior Context" (e.g., did they ignore a question? Say something weird?). Be specific.
 
     Return JSON: { 
       "awards": [{ "title": "...", "winner": "Exact Name", "reason": "..." }], 

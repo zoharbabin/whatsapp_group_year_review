@@ -1,3 +1,4 @@
+
 export interface Message {
   date: Date;
   sender: string;
@@ -43,6 +44,7 @@ export interface ConversationKiller {
   content: string;
   date: Date;
   silenceDurationHours: number;
+  context?: string; // The message that came BEFORE the killer (to analyze why it died)
 }
 
 export interface ChatAnalysis {

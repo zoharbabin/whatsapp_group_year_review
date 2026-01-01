@@ -115,11 +115,17 @@ export const parseChatAsync = async (text: string, anonymize: boolean = false): 
       if (i % BATCH_SIZE === 0) await new Promise(resolve => setTimeout(resolve, 0));
       const msg = messages[i];
       const c = msg.content.toLowerCase();
+      
+      // Basic filtering of export artifacts
       if (c.includes('end-to-end encrypted') || c.includes('created this group')) continue;
       if (c.length < 60 && (c.includes('added') || c.includes('left') || c.includes('removed'))) continue;
       
       cleanMessages.push(msg);
   }
+
+  // CRITICAL FIX: SORT MESSAGES CHRONOLOGICALLY
+  // WhatsApp exports can sometimes be out of order depending on the device/backup
+  cleanMessages.sort((a, b) => a.date.getTime() - b.date.getTime());
 
   // --- PHASE 2: Analysis ---
   const participantsMap = new Map<string, ParticipantStats>();
@@ -186,15 +192,36 @@ export const parseChatAsync = async (text: string, anonymize: boolean = false): 
         const nextMsg = cleanMessages[index + 1];
         const silenceDurationMs = nextMsg.date.getTime() - msg.date.getTime();
         
+        // INTELLIGENT KILLER DETECTION
+        // 1. Must be > 4 hours silence
+        // 2. Must happen during "waking hours" (8am - 10pm) to avoid sleeping silences
+        // 3. Must NOT be a system message (security code, etc)
+        // 4. Must NOT be a media message
         if (silenceDurationMs > 14400000 && hour >= 8 && hour <= 22) {
-             const silenceHours = silenceDurationMs / (1000 * 60 * 60);
-             stats.conversationKills++;
-             conversationKillers.push({
-                 sender: msg.sender,
-                 content: msg.content,
-                 date: msg.date,
-                 silenceDurationHours: parseFloat(silenceHours.toFixed(1))
-             });
+             const lowerC = msg.content.toLowerCase();
+             const isSystem = lowerC.includes('security code') || 
+                              lowerC.includes('waiting for this message') ||
+                              lowerC.includes('this message was deleted') ||
+                              lowerC.includes('encryption') || 
+                              lowerC.includes('changed the subject') ||
+                              lowerC.includes('changed the group') ||
+                              lowerC.includes('joined using this group');
+             
+             if (!msg.isMedia && !isSystem && msg.content.length > 3) {
+                 const silenceHours = silenceDurationMs / (1000 * 60 * 60);
+                 stats.conversationKills++;
+                 
+                 // Capture context: The message BEFORE the killer
+                 const contextMsg = index > 0 ? `${cleanMessages[index-1].sender}: "${cleanMessages[index-1].content.substring(0, 50)}..."` : "No prior context";
+
+                 conversationKillers.push({
+                     sender: msg.sender,
+                     content: msg.content,
+                     date: msg.date,
+                     silenceDurationHours: parseFloat(silenceHours.toFixed(1)),
+                     context: contextMsg // Save context for AI
+                 });
+             }
         }
     }
     prevMsgTime = msg.date.getTime();
