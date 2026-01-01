@@ -1,0 +1,5 @@
+{
+  "name": "ChatWrap: Festive Year in Review",
+  "description": "A festive, AI-powered WhatsApp chat analyzer that turns your group history into a beautiful year-in-review experience using Gemini Pro.",
+  "requestFramePermissions": []
+}
