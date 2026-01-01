@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import FileUpload from './components/FileUpload';
 import Dashboard from './components/Dashboard';
@@ -7,7 +8,7 @@ import { ChatAnalysis, AIInsights, AppState } from './types';
 import confetti from 'canvas-confetti';
 
 // Aggressively bumped version to force refresh
-const CACHE_VERSION = 'v7.6_fix_pie';
+const CACHE_VERSION = 'v7.8_deep_analysis_fix';
 
 const FALLBACK_INSIGHTS: AIInsights = {
   summary: "The chat was too legendary for the AI (Timeout), but your stats are ready!",
@@ -124,15 +125,16 @@ const App: React.FC = () => {
   const fetchAI = (parsedData: ChatAnalysis, cacheKey: string) => {
     const messagesToAnalyze = parsedData.messageSample || parsedData.viralMessages || [];
     
-    // Increased to 90s to accommodate large generative tasks for long chats
+    // Increased to 120s (2 minutes) to accommodate large generative tasks
     const timeoutPromise = new Promise<AIInsights>((_, reject) => {
-        setTimeout(() => reject(new Error("AI Analysis Timeout")), 90000);
+        setTimeout(() => reject(new Error("AI Analysis Timeout")), 120000);
     });
 
     const aiPromise = analyzeWithGemini(
       messagesToAnalyze, 
       parsedData.participants, 
       parsedData.wordCloud,
+      parsedData.topEmojis, // NEW: Passing topEmojis for better emotional analysis
       parsedData.peakDayContext,
       parsedData.sharedLinks,
       parsedData.domainStats,

@@ -21,13 +21,29 @@ function safeJsonParse(str: string): any {
   try {
     return JSON.parse(clean);
   } catch (e) {
-    // 3. Attempt to fix unquoted keys: { key: "value" } -> { "key": "value" }
-    // This handles cases where the AI forgets quotes around keys
+    // 3. Attempt to fix common JSON syntax errors from LLMs
     try {
-        const fixed = clean.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
+        let fixed = clean;
+        
+        // Remove comments (// ...)
+        fixed = fixed.replace(/\/\/.*$/gm, '');
+
+        // Fix single-quoted keys ('key':) -> "key":
+        // This handles keys at the start of a line or after a separator
+        fixed = fixed.replace(/(^|[{,]\s*)'([a-zA-Z0-9_\-]+)'\s*:/g, '$1"$2":');
+        
+        // Fix unquoted keys: key: "value" -> "key": "value"
+        // We look for a key followed by a colon, preceded by { or , or start of string
+        // We accept alphanumeric + underscore + hyphen
+        fixed = fixed.replace(/(^|[{,]\s*)([a-zA-Z0-9_\-]+)\s*:/g, '$1"$2":');
+        
+        // Fix trailing commas before closing braces/brackets: , } -> } and , ] -> ]
+        fixed = fixed.replace(/,\s*([\]}])/g, '$1');
+
         return JSON.parse(fixed);
     } catch (e2) {
-        throw e; // Throw original error if fix fails
+        console.warn("JSON auto-fix failed for:", clean.substring(0, 100) + "..."); 
+        throw e; // Throw original error so we know it failed
     }
   }
 }
@@ -45,10 +61,43 @@ function sanitizeNumber(val: any): number {
     return 0;
 }
 
+export const generateFestiveImage = async (summary: string, title: string): Promise<string | null> => {
+    const ai = getClient();
+    if (!ai) return null;
+
+    try {
+        const prompt = `A funny, festive, high-quality 3D render abstract image representing this group chat description: "${summary}". 
+        The image should be vibrant, colorful, like a Spotify Wrapped cover art. 
+        Style: Abstract 3D, Confetti, Neon Lights, Celebration. No text in the image.`;
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash-image',
+            contents: { parts: [{ text: prompt }] },
+            config: {
+                // Ensure we get a simplified response if possible, though flash-image handles it automatically
+            }
+        });
+
+        // Extract image from response parts
+        if (response.candidates?.[0]?.content?.parts) {
+            for (const part of response.candidates[0].content.parts) {
+                if (part.inlineData && part.inlineData.data) {
+                    return `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
+                }
+            }
+        }
+        return null;
+    } catch (error) {
+        console.error("Image Gen Error:", error);
+        return null;
+    }
+};
+
 export const analyzeWithGemini = async (
   messages: Message[], 
   participants: ParticipantStats[],
   rawWordCloud: { text: string; value: number }[],
+  topEmojis: { emoji: string; count: number }[],
   peakDayContext?: { date: string; snippets: string[] }[],
   sharedLinks?: SharedLink[],
   domainStats?: { domain: string; count: number }[],
@@ -77,19 +126,37 @@ export const analyzeWithGemini = async (
   const ai = getClient();
   if (!ai) return fallbackInsights;
 
-  // --- Context Construction (Shared across all requests) ---
+  // --- Context Construction ---
+  
+  // 1. Message Sample
   const messagesToAnalyze = messages
-      .map(m => `${m.sender}: ${m.content.substring(0, 200)}`) 
+      .map(m => `${m.sender}: ${m.content.substring(0, 150)}`) 
       .join('\n');
 
-  const participantNames = participants.slice(0, 15).map(p => p.name).join(", ");
+  // 2. High-Level Stats
+  const topActive = participants.slice(0, 5).map(p => `${p.name} (${p.messageCount} msgs)`).join(", ");
+  const topQuiet = participants.slice(-3).map(p => p.name).join(", ");
+  const topInteractions = interactionGraph?.links.slice(0, 5).map(l => `${l.source} & ${l.target}`).join(", ") || "None detected";
   const rawWords = rawWordCloud.slice(0, 60).map(w => w.text).join(", ");
   
+  // 3. Pre-processed Emotion Signals (CRITICAL for "Emotional Rollercoaster")
+  // Instead of asking AI to guess emotion from text, we give it the emoji stats which are much more reliable.
+  const emojiSignals = topEmojis.slice(0, 30).map(e => `${e.emoji} (${e.count})`).join(", ");
+
+  // 4. Pre-processed Link Context (CRITICAL for "Internet Rabbit Hole")
+  // Instead of just URLs, we provide the URL + the message sent with it.
+  const linkContext = sharedLinks 
+      ? sharedLinks.slice(0, 15).map((l, i) => {
+          const contextSnippets = l.context.slice(0, 2).map(c => `"${c}"`).join(" or ");
+          return `${i+1}. URL: ${l.url} (Shared ${l.count}x)\n   Context: ${contextSnippets || "No context"}`;
+        }).join("\n")
+      : "No links shared.";
+
+  // 5. Killer Context
   const topKiller = conversationKillers && conversationKillers.length > 0 ? conversationKillers[0] : null;
   const killerContext = topKiller ? `Message by ${topKiller.sender}: "${topKiller.content.substring(0, 100)}..." (Silence: ${topKiller.silenceDurationHours}h)` : "No killer found.";
 
-  const topLinks = sharedLinks ? sharedLinks.slice(0, 15).map(l => `${l.url} (${l.count}x)`).join(", ") : "No links.";
-  
+  // 6. Peak Days
   let peakContextStr = "No peak day data.";
   if (peakDayContext && peakDayContext.length > 0) {
       peakContextStr = peakDayContext.map((p, i) => 
@@ -98,16 +165,14 @@ export const analyzeWithGemini = async (
   }
 
   const basePrompt = `
-    Data provided:
-    - Active Members: ${participantNames}
-    - Obsessed Words: ${rawWords}
-    - Awkward Silence Caused By: ${killerContext}
-    - Viral Links: ${topLinks}
+    Analyze this WhatsApp group chat.
+    STATS:
+    - Active: ${topActive}
+    - Quiet: ${topQuiet}
+    - Pairs: ${topInteractions}
+    - Words: ${rawWords}
     
-    TIMELINE CONTEXT:
-    ${peakContextStr}
-    
-    CHAT HISTORY SAMPLE:
+    CHAT SAMPLE (First ${messages.length} msgs):
     ${messagesToAnalyze}
   `;
 
@@ -123,64 +188,85 @@ export const analyzeWithGemini = async (
       config: { responseMimeType: "application/json", safetySettings }
   };
 
-  // --- 4 Split Prompts (Updated to enforce strict JSON syntax) ---
+  // --- Split Prompts ---
 
-  // 1. VIBE CHECK (Summary, Poem, Topics)
+  // 1. VIBE CHECK
   const vibePrompt = `
     You are a witty analyst creating a "Year in Review".
     ${basePrompt}
     TASKS:
-    1. Summary: EXACTLY ONE SHORT SENTENCE (MAX 25 WORDS) summarizing the group's specific vibe. Do not write a paragraph.
-    2. Poem: A short, funny 4-line poem about the group.
-    3. Topics: List 5 main topics discussed (one word each).
+    1. Summary: ONE SHORT SENTENCE (MAX 25 WORDS) summarizing the group's vibe.
+    2. Poem: A funny 4-line poem about the group.
+    3. Topics: List 5 main topics (one word each).
     
-    Return a valid JSON object with keys: "summary", "poem", "topics".
-    Example: { "summary": "...", "poem": "...", "topics": ["..."] }
+    Return JSON: { "summary": "...", "poem": "...", "topics": ["..."] }
   `;
 
-  // 2. THE ROAST (Awards, Reality TV, Killer Roast)
+  // 2. THE ROAST (Fixed for Reality Show Cast structure)
   const roastPrompt = `
-    You are a casting director and comedian.
+    You are a casting director.
     ${basePrompt}
+    AWKWARD SILENCE EVENT: ${killerContext}
+    
     TASKS:
-    1. Awards: 6 creative awards. Title must be SHORT (MAX 4 WORDS). Reason must be funny.
-    2. Reality TV Pitch: 
-       - Title: Punny and SHORT (MAX 5 WORDS).
-       - Genre: e.g. "True Crime".
-       - Logline: MAX 15 WORDS.
-       - Cast: 4 members. For each provide keys: "name", "role" (e.g. The Villain), "archetype" (e.g. The Schemer).
-    3. Killer Roast: Roast the "Awkward Silence" message. MAX 20 WORDS.
+    1. Awards: 6 creative awards. Title SHORT (MAX 4 WORDS). Reason funny.
+    2. Reality TV Pitch: Title, Genre, Logline.
+    3. Cast: Pick 4 specific members from the "Active" or "Quiet" lists.
+       For each, provide:
+       - "name": Exact member name from the STATS list.
+       - "archetype": Short label (e.g. "The Villain", "The Mom").
+       - "role": One sentence description of their behavior.
+    4. Killer Roast: Roast the awkward silence message.
 
-    Return a valid JSON object with keys: "awards", "realityShow", "killerRoast".
-    Structure for realityShow.cast: [{ "name": "...", "role": "...", "archetype": "..." }]
-    Example: { "awards": [], "realityShow": { "title": "...", "cast": [{"name": "X", "role": "Y", "archetype": "Z"}] }, "killerRoast": "..." }
+    Return JSON: { 
+      "awards": [{ "title": "...", "winner": "Exact Name", "reason": "..." }], 
+      "realityShow": { 
+        "title": "...", 
+        "genre": "...", 
+        "logline": "...", 
+        "cast": [{ "name": "Exact Name", "archetype": "The Label", "role": "Description" }] 
+      }, 
+      "killerRoast": "..." 
+    }
   `;
 
-  // 3. SOCIAL DYNAMICS (Relationships, Emotions)
+  // 3. SOCIAL DYNAMICS (Enriched with Emoji Data)
   const socialPrompt = `
     You are a sociologist.
     ${basePrompt}
+    
+    EMOTIONAL SIGNALS (Emoji Frequency):
+    ${emojiSignals}
+    
     TASKS:
-    1. Relationship Analysis: Pick 4 pairs of people who interact often. Label their dynamic (e.g. "The Rivals"). Description MAX 10 WORDS.
-    2. Emotional Rollercoaster: 4 dominant emotions in the chat.
-       For each provide keys: "emoji" (single char), "label" (one word), "score" (0-100).
+    1. Relationship Analysis: Pick 4 pairs from the "Pairs" stat provided. Label dynamic (e.g. "The Rivals").
+    2. Emotional Rollercoaster: Analyze the EMOJI SIGNALS above.
+       Identify 4 dominant moods. 
+       "score" must be 0-100 based on frequency.
+       "label" must be one word (e.g., "Joy", "Cringe", "Love", "Rage").
+       "emoji" must be the representative emoji.
 
-    Return a valid JSON object with keys: "relationshipAnalysis", "emotionalProfile".
-    Structure for emotionalProfile: [{ "emoji": "😍", "label": "Love", "score": 90 }]
-    Example: { "relationshipAnalysis": [], "emotionalProfile": [{ "emoji": "...", "label": "...", "score": 10 }] }
+    Return JSON: { "relationshipAnalysis": [], "emotionalProfile": [{ "emoji": "😂", "label": "Joy", "score": 90 }] }
   `;
 
-  // 4. CONTENT & TIMELINE (Links, Highlights)
+  // 4. CONTENT & TIMELINE (Enriched with Link Context)
   const contentPrompt = `
     You are a data scientist.
     ${basePrompt}
+    
+    LINK ANALYSIS DATA:
+    ${linkContext}
+    
+    TIMELINE PEAKS:
+    ${peakContextStr}
+    
     TASKS:
-    1. Internet Rabbit Hole: Group shared links into 4 distinct content themes.
-    2. Top Links Commentary: For top 3 links, give a funny title (MAX 5 WORDS) and comment (MAX 10 WORDS).
-    3. Timeline Highlights: For the peak dates provided, give a funny label (MAX 3 WORDS).
+    1. Internet Rabbit Hole: Analyze the "LINK ANALYSIS DATA". Group shared links into 4 distinct content themes (e.g., "TikToks", "News", "Music", "Shopping"). 
+       "percentage" is the estimated share of that theme (sum to 100).
+    2. Top Links Commentary: Pick top 3 links from data. Give a funny title (MAX 5 WORDS) and short commentary based on the "Context" provided.
+    3. Timeline Highlights: Label the peak dates provided in "TIMELINE PEAKS" (e.g., "The Breakup", "New Job").
 
-    Return a valid JSON object with keys: "linkThemes", "topLinksCommentary", "timelineHighlights".
-    Example: { "linkThemes": [], "topLinksCommentary": [], "timelineHighlights": [] }
+    Return JSON: { "linkThemes": [{ "theme": "...", "percentage": 50 }], "topLinksCommentary": [], "timelineHighlights": [] }
   `;
 
   try {
@@ -199,25 +285,23 @@ export const analyzeWithGemini = async (
                 const parsed = safeJsonParse(res.value.text);
                 
                 // TYPE SAFETY & SANITIZATION
-                // 1. Arrays must be arrays
                 if (parsed.topics && !Array.isArray(parsed.topics)) parsed.topics = [];
                 if (parsed.awards && !Array.isArray(parsed.awards)) parsed.awards = [];
                 if (parsed.realityShow?.cast && !Array.isArray(parsed.realityShow.cast)) parsed.realityShow.cast = [];
                 if (parsed.relationshipAnalysis && !Array.isArray(parsed.relationshipAnalysis)) parsed.relationshipAnalysis = [];
                 
-                // 2. Deep Sanitization for complex objects (Prevent undefined crashes)
                 if (parsed.realityShow?.cast && Array.isArray(parsed.realityShow.cast)) {
                     parsed.realityShow.cast = parsed.realityShow.cast.map((c: any) => ({
-                        name: c.name || "Unknown",
-                        role: c.role || "Member",
-                        archetype: c.archetype || "Participant" // Fallback to prevent crash
+                        // Robust fallback for name to prevent "Unknown"
+                        name: c.name || c.member || c.actor || c.person || "Unknown",
+                        role: c.role || c.description || "Member",
+                        archetype: c.archetype || c.label || "Participant" 
                     }));
                 }
 
                 if (parsed.linkThemes && Array.isArray(parsed.linkThemes)) {
                     parsed.linkThemes = parsed.linkThemes.map((t: any) => ({
                         ...t,
-                        // Fallback check: AI sometimes calls it 'value', 'count', or 'score'
                         percentage: sanitizeNumber(t.percentage || t.value || t.count || t.score)
                     }));
                 } else if (parsed.linkThemes) {
@@ -239,7 +323,6 @@ export const analyzeWithGemini = async (
                 if (parsed.topLinksCommentary && Array.isArray(parsed.topLinksCommentary)) {
                     parsed.topLinksCommentary = parsed.topLinksCommentary.map((c: any) => ({
                         ...c,
-                        // Leave empty if missing so UI can hide it
                         commentary: c.commentary && c.commentary.trim().length > 0 ? c.commentary : ""
                     }));
                 } else if (parsed.topLinksCommentary) {
@@ -249,8 +332,6 @@ export const analyzeWithGemini = async (
                 Object.assign(merged, parsed);
             } catch (e) { 
                 console.error("Parse error in chunk", e); 
-                // Only log the first 100 chars
-                console.log("Failed text start:", res.value.text.substring(0, 100));
             }
         }
     };

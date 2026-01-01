@@ -5,7 +5,7 @@ import TimelineChart from './TimelineChart';
 import WordCloud from './WordCloud';
 import RelationshipGraph from './RelationshipGraph';
 import ResponseStyleChart from './ResponseStyleChart';
-import { MessageSquare, Users, Image as ImageIcon, TrendingUp, Award, Quote, Zap, Clock, Link as LinkIcon, ExternalLink, Download, Share2, Tv, Skull, Activity } from 'lucide-react';
+import { MessageSquare, Users, Image as ImageIcon, TrendingUp, Award, Quote, Zap, Clock, Link as LinkIcon, ExternalLink, Download, Share2, Tv, Skull, Activity, Loader2 } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, Legend } from 'recharts';
 import { downloadResults } from '../services/exporter';
 
@@ -41,6 +41,8 @@ const SafeChartContainer: React.FC<{ children: React.ReactElement; height?: stri
 };
 
 const Dashboard: React.FC<DashboardProps> = ({ data, insights, loadingAI }) => {
+  const [isExporting, setIsExporting] = useState(false);
+
   if (!data) return null;
   const participants = data.participants || [];
   const mediaStats = data.mediaStats || [];
@@ -57,12 +59,27 @@ const Dashboard: React.FC<DashboardProps> = ({ data, insights, loadingAI }) => {
       linkThemeData = data.domainStats.slice(0, 5).map(d => ({ theme: d.domain, percentage: d.count }));
   }
 
+  const handleDownload = async () => {
+    setIsExporting(true);
+    await downloadResults(data, insights);
+    setIsExporting(false);
+  };
+
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 p-6 max-w-7xl mx-auto">
       {/* Header */}
       <div className="col-span-full mb-4 text-center relative group">
         <h1 className="text-6xl font-black bg-clip-text text-transparent bg-gradient-to-r from-festive-primary to-festive-secondary mb-4 tracking-tight drop-shadow-sm">{data.chatName} Wrapped</h1>
-        <button onClick={() => downloadResults(data, insights)} className="absolute top-0 right-0 p-3 bg-slate-800 hover:bg-festive-primary text-gray-300 hover:text-white rounded-full transition-all shadow-lg hover:shadow-festive-primary/50 group-hover:scale-110" title="Save as HTML"><Download size={20} /></button>
+        
+        <button 
+          onClick={handleDownload} 
+          disabled={isExporting}
+          className="absolute top-0 right-0 p-3 bg-slate-800 hover:bg-festive-primary text-gray-300 hover:text-white rounded-full transition-all shadow-lg hover:shadow-festive-primary/50 group-hover:scale-110 disabled:opacity-50 disabled:cursor-wait" 
+          title="Save as HTML"
+        >
+           {isExporting ? <Loader2 size={20} className="animate-spin" /> : <Download size={20} />}
+        </button>
+
         <div className="min-h-[4rem] flex items-center justify-center">
           {loadingAI ? <div className="animate-pulse h-8 bg-slate-700/50 rounded w-1/2"></div> : <p className="text-2xl font-bold text-white max-w-3xl mx-auto leading-relaxed px-4">"{insights?.summary || "Analyzing..."}"</p>}
         </div>
@@ -197,7 +214,7 @@ const Dashboard: React.FC<DashboardProps> = ({ data, insights, loadingAI }) => {
 
       {/* Row 5: Relationships & Media */}
       <StatCard title="The Connection Web" icon={<Share2 />} className="lg:col-span-3 h-96" delay={0.7}>
-         {data.interactionGraph ? <RelationshipGraph graph={data.interactionGraph} commentary={Array.isArray(insights?.relationshipAnalysis) ? insights!.relationshipAnalysis : []} /> : <div className="text-gray-500 flex items-center justify-center h-full">Not enough data</div>}
+         {data.interactionGraph ? <RelationshipGraph graph={data.interactionGraph} commentary={Array.isArray(insights?.relationshipAnalysis) ? insights!.relationshipAnalysis : []} /> : <div className="text-gray-500 flex items-center justify-center h-full">Not enough data for graph</div>}
       </StatCard>
 
       <StatCard title="Media Diet" className="lg:col-span-1 h-96" delay={0.6}>

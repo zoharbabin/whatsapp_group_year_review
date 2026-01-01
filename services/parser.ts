@@ -1,3 +1,4 @@
+
 import { Message, ParticipantStats, ChatAnalysis, SharedLink, InteractionGraph, ConversationKiller } from '../types';
 import { STOP_WORDS } from '../constants';
 import SparkMD5 from 'spark-md5';
@@ -334,8 +335,8 @@ export const parseChatAsync = async (text: string, anonymize: boolean = false): 
   });
 
   // SMART DISTRIBUTED SAMPLING
-  // Sample up to 3500 messages to provide rich context
-  const SAMPLE_SIZE = 3500;
+  // Sample up to 1000 messages (reduced from 3500) to ensure stability with large files
+  const SAMPLE_SIZE = 1000;
   const step = Math.max(1, Math.floor(cleanMessages.length / SAMPLE_SIZE));
   const distributedSample: Message[] = [];
   

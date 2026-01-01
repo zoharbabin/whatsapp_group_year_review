@@ -1,29 +1,75 @@
 import { ChatAnalysis, AIInsights } from '../types';
+import { generateFestiveImage } from './gemini';
 
-export const downloadResults = (data: ChatAnalysis, insights: AIInsights | null) => {
-  const htmlContent = generateHTML(data, insights);
+export const downloadResults = async (data: ChatAnalysis, insights: AIInsights | null) => {
+  // Generate a festive cover image before creating the HTML
+  let coverImageBase64 = null;
+  if (insights && insights.summary) {
+    try {
+        coverImageBase64 = await generateFestiveImage(insights.summary, data.chatName);
+    } catch (e) {
+        console.warn("Could not generate cover image", e);
+    }
+  }
+
+  const htmlContent = generateHTML(data, insights, coverImageBase64);
   const blob = new Blob([htmlContent], { type: 'text/html' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${data.chatName.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_wrapped.html`;
+  
+  // Ensure the download filename matches the unique slug logic used in OG:URL
+  const filename = `${data.chatName.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_wrapped.html`;
+  a.download = filename;
+  
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 };
 
-const generateHTML = (data: ChatAnalysis, insights: AIInsights | null) => {
+const generateHTML = (data: ChatAnalysis, insights: AIInsights | null, coverImage: string | null) => {
   // Safe serialization for script injection
   const safeData = JSON.stringify(data).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
   const safeInsights = JSON.stringify(insights).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
+
+  const title = `${data.chatName} - Year in Review`;
+  const description = insights?.summary || `Check out our group chat wrapped statistics! ${data.totalMessages} messages sent.`;
+
+  // Static OG Image configuration as requested
+  const ogImageUrl = "https://zoharbabin.github.io/whatsapp_group_year_review/bgimg.jpg";
+  
+  // Unique URL generation based on chat name
+  const uniqueFilename = `${data.chatName.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_wrapped.html`;
+  const ogUrl = `https://zoharbabin.github.io/whatsapp_group_year_review/${uniqueFilename}`;
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${data.chatName} - Year in Review</title>
+  <title>${title}</title>
+  
+  <!-- SEO & Open Graph Metadata -->
+  <meta name="description" content="${description}" />
+  <meta property="og:title" content="${title}" />
+  <meta property="og:description" content="${description}" />
+  <meta property="og:type" content="article" />
+  
+  <!-- Static Image Configuration -->
+  <meta property="og:image" content="${ogImageUrl}" />
+  <meta property="og:image:width" content="1024" />
+  <meta property="og:image:height" content="1024" />
+  <meta property="og:image:alt" content="${title}" />
+  
+  <!-- Unique URL Configuration -->
+  <meta property="og:url" content="${ogUrl}" />
+  
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="${title}" />
+  <meta name="twitter:description" content="${description}" />
+  <meta name="twitter:image" content="${ogImageUrl}" />
+  
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -62,6 +108,7 @@ const generateHTML = (data: ChatAnalysis, insights: AIInsights | null) => {
   <script>
     window.ANALYSIS_DATA = ${safeData};
     window.AI_INSIGHTS = ${safeInsights};
+    window.COVER_IMAGE = "${coverImage || ''}";
   </script>
   <script type="text/babel">
     const { useState, useEffect, useRef, useMemo } = React;
